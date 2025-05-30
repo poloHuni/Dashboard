@@ -4,7 +4,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
 import { Input } from "@/components/ui/input"
@@ -21,7 +23,7 @@ import {
   Music,
   MessageSquare,
   Target,
-  Calendar,
+  CalendarIcon,
   Phone,
   Mail,
   RefreshCw,
@@ -30,7 +32,10 @@ import {
   Award,
   BookOpen,
   Brain,
+  Building2,
+  Filter,
 } from "lucide-react"
+import { format, startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-fns"
 
 // Import xlsx library for Excel parsing
 import * as XLSX from "xlsx"
@@ -55,7 +60,13 @@ interface ReviewData {
 }
 
 export default function RestaurantDashboard() {
-  const [selectedPeriod, setSelectedPeriod] = useState("30")
+  const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>({
+    from: startOfDay(subDays(new Date(), 30)),
+    to: endOfDay(new Date())
+  })
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false)
+  const [selectedRestaurants, setSelectedRestaurants] = useState<string[]>([])
+  const [isRestaurantSelectorOpen, setIsRestaurantSelectorOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("overview")
   const [data, setData] = useState<ReviewData[]>([])
   const [loading, setLoading] = useState(true)
@@ -73,25 +84,126 @@ export default function RestaurantDashboard() {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
 
+  // Get unique restaurants from data
+  const getUniqueRestaurants = () => {
+    if (!mounted || data.length === 0) return []
+    
+    const restaurantMap = new Map()
+    data.forEach(review => {
+      if (!restaurantMap.has(review.restaurant_id)) {
+        // Try to extract a friendly name from the data or use the ID
+        const restaurantName = review.restaurant_id.replace(/[_-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+        restaurantMap.set(review.restaurant_id, {
+          id: review.restaurant_id,
+          name: restaurantName,
+          reviewCount: 0
+        })
+      }
+      restaurantMap.get(review.restaurant_id).reviewCount++
+    })
+    
+    return Array.from(restaurantMap.values()).sort((a, b) => b.reviewCount - a.reviewCount)
+  }
+
+  // Initialize selected restaurants when data loads
+  useEffect(() => {
+    if (mounted && data.length > 0 && selectedRestaurants.length === 0) {
+      const restaurants = getUniqueRestaurants()
+      setSelectedRestaurants(restaurants.map(r => r.id))
+    }
+  }, [mounted, data, selectedRestaurants.length])
+
+  // Handle restaurant selection
+  const toggleRestaurant = (restaurantId: string) => {
+    setSelectedRestaurants(prev => {
+      if (prev.includes(restaurantId)) {
+        return prev.filter(id => id !== restaurantId)
+      } else {
+        return [...prev, restaurantId]
+      }
+    })
+  }
+
+  const selectAllRestaurants = () => {
+    const restaurants = getUniqueRestaurants()
+    setSelectedRestaurants(restaurants.map(r => r.id))
+  }
+
+  const clearAllRestaurants = () => {
+    setSelectedRestaurants([])
+  }
+
   // Ensure component is mounted before rendering dynamic content
   useEffect(() => {
     setMounted(true)
   }, [])
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  // Handle preset date ranges
+  const setPresetRange = (preset: string) => {
+    const now = new Date()
+    let from: Date
+    let to = endOfDay(now)
+
+    switch (preset) {
+      case "today":
+        from = startOfDay(now)
+        break
+      case "yesterday":
+        from = startOfDay(subDays(now, 1))
+        to = endOfDay(subDays(now, 1))
+        break
+      case "last7days":
+        from = startOfDay(subDays(now, 7))
+        break
+      case "last30days":
+        from = startOfDay(subDays(now, 30))
+        break
+      case "thisWeek":
+        from = startOfWeek(now, { weekStartsOn: 1 })
+        break
+      case "thisMonth":
+        from = startOfMonth(now)
+        break
+      case "last90days":
+        from = startOfDay(subDays(now, 90))
+        break
+      default:
+        from = startOfDay(subDays(now, 30))
+    }
+
+    setDateRange({ from, to })
+    setIsCalendarOpen(false)
+  }
+
+  // Filter data by date range and selected restaurants - only on client side
+  const getFilteredData = () => {
+    if (!mounted) return data
+
+    return data.filter((review) => {
+      const reviewDate = new Date(review.timestamp)
+      const dateInRange = reviewDate >= dateRange.from && reviewDate <= dateRange.to
+      const restaurantSelected = selectedRestaurants.length === 0 || selectedRestaurants.includes(review.restaurant_id)
+      return dateInRange && restaurantSelected
+    })
+  }
 
   // Calculate metrics only on client side to prevent hydration mismatch
   useEffect(() => {
     if (mounted && data.length > 0) {
-      const totalReviews = data.length
-      const averageRating = data.reduce((sum, review) => sum + review.sentiment_score, 0) / totalReviews
-      const positiveReviews = data.filter((review) => review.sentiment_score >= 4).length
-      const positiveRate = (positiveReviews / totalReviews) * 100
-      const criticalIssues = data.filter((review) => review.sentiment_score <= 2).length
-      const uniqueCustomers = new Set(data.map((review) => review.customer_id)).size
+      const filteredData = getFilteredData()
+      
+      const totalReviews = filteredData.length
+      const averageRating = totalReviews > 0 ? filteredData.reduce((sum, review) => sum + review.sentiment_score, 0) / totalReviews : 0
+      const positiveReviews = filteredData.filter((review) => review.sentiment_score >= 4).length
+      const positiveRate = totalReviews > 0 ? (positiveReviews / totalReviews) * 100 : 0
+      const criticalIssues = filteredData.filter((review) => review.sentiment_score <= 2).length
+      const uniqueCustomers = new Set(filteredData.map((review) => review.customer_id)).size
 
-      // Calculate recent reviews (last 7 days) only on client
-      const sevenDaysAgo = new Date()
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-      const recentReviews = data.filter((review) => new Date(review.timestamp) >= sevenDaysAgo).length
+      // Calculate reviews in the selected period
+      const selectedPeriodReviews = filteredData.length
 
       setCalculatedMetrics({
         totalReviews,
@@ -99,10 +211,10 @@ export default function RestaurantDashboard() {
         positiveRate,
         criticalIssues,
         uniqueCustomers,
-        recentReviews,
+        recentReviews: selectedPeriodReviews,
       })
     }
-  }, [mounted, data])
+  }, [mounted, data, dateRange, selectedRestaurants])
 
   // Load data from Excel file directly
   useEffect(() => {
@@ -251,17 +363,6 @@ Keep the analysis concise but actionable.`
     }
   }
 
-  // Filter data by time period - only on client side
-  const getFilteredData = () => {
-    if (!mounted || selectedPeriod === "all") return data
-
-    const days = Number.parseInt(selectedPeriod)
-    const cutoffDate = new Date()
-    cutoffDate.setDate(cutoffDate.getDate() - days)
-
-    return data.filter((review) => new Date(review.timestamp) >= cutoffDate)
-  }
-
   // Get sentiment distribution - safe for SSR
   const getSentimentDistribution = () => {
     if (!mounted) return [1, 2, 3, 4, 5].map(rating => ({ rating, count: 0 }))
@@ -371,6 +472,37 @@ Keep the analysis concise but actionable.`
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="container mx-auto px-6 py-8">
+        {/* Active Filters - Only render after mounting */}
+        {mounted && selectedRestaurants.length > 0 && selectedRestaurants.length < getUniqueRestaurants().length && (
+          <Card className="mb-6 border-blue-200 bg-blue-50">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <div className="flex items-center space-x-2">
+                    <Filter className="h-4 w-4 text-blue-600" />
+                    <span className="text-sm font-medium text-blue-800">Active Filters:</span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Badge variant="outline" className="text-blue-700 border-blue-300">
+                      {selectedRestaurants.length} of {getUniqueRestaurants().length} restaurants
+                    </Badge>
+                    <Badge variant="outline" className="text-blue-700 border-blue-300">
+                      {mounted ? format(dateRange.from, "MMM dd") : ""} - {mounted ? format(dateRange.to, "MMM dd, yyyy") : ""}
+                    </Badge>
+                  </div>
+                </div>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={selectAllRestaurants}
+                  className="text-blue-600 hover:text-blue-800"
+                >
+                  Clear Restaurant Filter
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
           <Card className="mb-8">
             <CardContent className="flex items-center justify-center p-6">
               <div className="text-center">
@@ -444,17 +576,195 @@ Keep the analysis concise but actionable.`
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
-                <SelectTrigger className="w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="7">Last 7 days</SelectItem>
-                  <SelectItem value="30">Last 30 days</SelectItem>
-                  <SelectItem value="90">Last 90 days</SelectItem>
-                  <SelectItem value="all">All time</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover open={isCalendarOpen} onOpenChange={setIsCalendarOpen}>
+                <PopoverTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    className="w-80 justify-start text-left font-normal bg-white/90 backdrop-blur-sm hover:bg-white/95 border-slate-200 shadow-sm"
+                  >
+                    <CalendarIcon className="mr-3 h-4 w-4 text-slate-500" />
+                    <span className="flex-1">
+                      {mounted ? 
+                        `${format(dateRange.from, "MMM dd, yyyy")} - ${format(dateRange.to, "MMM dd, yyyy")}` :
+                        "Loading date range..."
+                      }
+                    </span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0 bg-white/95 backdrop-blur-lg border-slate-200 shadow-xl" align="end">
+                  <div className="p-4 space-y-4">
+                    <div className="space-y-2">
+                      <h4 className="font-semibold text-sm text-slate-700">Select Date Range</h4>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setPresetRange("today")}
+                          className="justify-start text-xs"
+                        >
+                          Today
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setPresetRange("yesterday")}
+                          className="justify-start text-xs"
+                        >
+                          Yesterday
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setPresetRange("last7days")}
+                          className="justify-start text-xs"
+                        >
+                          Last 7 days
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setPresetRange("last30days")}
+                          className="justify-start text-xs"
+                        >
+                          Last 30 days
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setPresetRange("thisWeek")}
+                          className="justify-start text-xs"
+                        >
+                          This week
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setPresetRange("thisMonth")}
+                          className="justify-start text-xs"
+                        >
+                          This month
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="border-t pt-4">
+                      <Calendar
+                        mode="range"
+                        selected={{ from: dateRange.from, to: dateRange.to }}
+                        onSelect={(range) => {
+                          if (range?.from && range?.to) {
+                            setDateRange({
+                              from: startOfDay(range.from),
+                              to: endOfDay(range.to)
+                            })
+                          }
+                        }}
+                        numberOfMonths={2}
+                        className="rounded-md"
+                      />
+                    </div>
+                    <div className="border-t pt-4 flex justify-between">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setIsCalendarOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        onClick={() => setIsCalendarOpen(false)}
+                        className="bg-slate-900 hover:bg-slate-800"
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+              
+              <Popover open={isRestaurantSelectorOpen} onOpenChange={setIsRestaurantSelectorOpen}>
+                <PopoverTrigger asChild>
+                  <Button 
+                    variant="outline" 
+                    className="w-64 justify-start text-left font-normal bg-white/90 backdrop-blur-sm hover:bg-white/95 border-slate-200 shadow-sm"
+                  >
+                    <Building2 className="mr-3 h-4 w-4 text-slate-500" />
+                    <span className="flex-1">
+                      {!mounted ? "Loading restaurants..." :
+                       selectedRestaurants.length === 0 ? "No restaurants selected" :
+                       selectedRestaurants.length === getUniqueRestaurants().length ? "All restaurants" :
+                       `${selectedRestaurants.length} restaurant${selectedRestaurants.length > 1 ? 's' : ''}`}
+                    </span>
+                    <Filter className="ml-2 h-4 w-4 text-slate-500" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80 p-0 bg-white/95 backdrop-blur-lg border-slate-200 shadow-xl" align="end">
+                  <div className="p-4 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-semibold text-sm text-slate-700">Select Restaurants</h4>
+                      <div className="flex space-x-2">
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={selectAllRestaurants}
+                          className="text-xs h-7"
+                        >
+                          All
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={clearAllRestaurants}
+                          className="text-xs h-7"
+                        >
+                          None
+                        </Button>
+                      </div>
+                    </div>
+                    
+                    {mounted && (
+                      <div className="max-h-64 overflow-y-auto space-y-2">
+                        {getUniqueRestaurants().map((restaurant) => (
+                          <div key={restaurant.id} className="flex items-center space-x-3 p-2 hover:bg-slate-50 rounded-md">
+                            <Checkbox
+                              id={restaurant.id}
+                              checked={selectedRestaurants.includes(restaurant.id)}
+                              onCheckedChange={() => toggleRestaurant(restaurant.id)}
+                            />
+                            <label 
+                              htmlFor={restaurant.id} 
+                              className="flex-1 text-sm font-medium cursor-pointer"
+                            >
+                              {restaurant.name}
+                            </label>
+                            <Badge variant="secondary" className="text-xs">
+                              {restaurant.reviewCount}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    
+                    <div className="border-t pt-4 flex justify-between">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setIsRestaurantSelectorOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        onClick={() => setIsRestaurantSelectorOpen(false)}
+                        className="bg-slate-900 hover:bg-slate-800"
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+              
               <Button variant="outline" size="sm" onClick={handleRefresh}>
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Refresh
@@ -495,7 +805,7 @@ Keep the analysis concise but actionable.`
         )}
 
         {/* Dashboard Content */}
-        {!loading && !error && data.length > 0 ? (
+        {!loading && !error && data.length > 0 && mounted ? (
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
             <TabsList className="grid w-full grid-cols-7 lg:w-fit">
               <TabsTrigger value="overview" className="flex items-center space-x-2">
@@ -515,7 +825,7 @@ Keep the analysis concise but actionable.`
                 <span className="hidden sm:inline">Customers</span>
               </TabsTrigger>
               <TabsTrigger value="trends" className="flex items-center space-x-2">
-                <Calendar className="h-4 w-4" />
+                <CalendarIcon className="h-4 w-4" />
                 <span className="hidden sm:inline">Trends</span>
               </TabsTrigger>
               <TabsTrigger value="ai-analysis" className="flex items-center space-x-2">
@@ -535,7 +845,7 @@ Keep the analysis concise but actionable.`
                 <MetricCard
                   title="Total Reviews"
                   value={calculatedMetrics.totalReviews}
-                  change={`+${calculatedMetrics.recentReviews} this week`}
+                  change={`${calculatedMetrics.recentReviews} in selected period`}
                   icon={MessageSquare}
                 />
                 <MetricCard title="Satisfaction Rate" value={`${calculatedMetrics.positiveRate.toFixed(1)}%`} icon={TrendingUp} />
